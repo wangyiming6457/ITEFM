@@ -1,9 +1,11 @@
+# Rewriting the file after kernel reset
+streamlit_code = '''
 import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl.styles import Font
 
-# --- AUTH ---
+# === AUTHENTICATION ===
 def login():
     st.title("🔒 ITEFM Login")
     username = st.text_input("Username")
@@ -29,9 +31,20 @@ SOT_KEYWORDS = [
 ]
 
 CAMP_GROUPS = {
-    "AC1": ["CLC", "MJC", "BPC"],
-    "AC2": ["MBC", "KC", "SMC"],
-    "AC3": ["MWC", "RRRC1"]
+    "AC1": {
+        "CLC": ["CLC-"],
+        "MJC": ["MJC-"],
+        "BPC": ["BPC-"]
+    },
+    "AC2": {
+        "MBC": ["MBC-"],
+        "KC": ["KC-", "KC2-", "KC3-"],
+        "SMC": ["SMC-"]
+    },
+    "AC3": {
+        "MWC": ["MWC-"],
+        "RRRC1": ["RRRC1-"]
+    }
 }
 
 REPORT_COLUMNS = [
@@ -53,9 +66,12 @@ def ensure_columns(df: pd.DataFrame, columns: list):
             df[col] = None
     return df
 
-def process_camp(job_df, asset_df, camp):
-    job_camp = job_df[job_df["Equipment QR Code"].astype(str).str.startswith(f"{camp}-")].copy()
-    asset_camp = asset_df[asset_df["Equipment Tag Number"].astype(str).str.startswith(f"{camp}-")].copy()
+def starts_with_any(series, prefixes):
+    return series.astype(str).apply(lambda x: any(x.startswith(p) for p in prefixes))
+
+def process_camp(job_df, asset_df, camp, prefixes):
+    job_camp = job_df[starts_with_any(job_df["Equipment QR Code"], prefixes)].copy()
+    asset_camp = asset_df[starts_with_any(asset_df["Equipment Tag Number"], prefixes)].copy()
 
     if "Status" in job_camp.columns:
         job_camp = job_camp.rename(columns={"Status": "Job Status"})
@@ -131,7 +147,7 @@ def to_excel_with_format(all_df, unmatched_df, matched_df):
 st.set_page_config(page_title="ITEFM Maintenance Report Generator", layout="wide")
 st.title("📋 ITEFM Maintenance Report Generator")
 
-ac_group = st.sidebar.radio("Select Camp Group", ["AC1", "AC2", "AC3"])
+ac_group = st.sidebar.radio("Select Camp Group", list(CAMP_GROUPS.keys()))
 job_file = st.sidebar.file_uploader("Upload Job Listing File (.xlsx)", type="xlsx", key=f"{ac_group}_job")
 asset_file = st.sidebar.file_uploader("Upload Grouped Asset List (.xlsx)", type="xlsx", key=f"{ac_group}_asset")
 
@@ -144,9 +160,9 @@ if st.button("Generate Reports"):
     asset_df = load_excel(asset_file, skiprows=5)
 
     st.subheader("Download Reports:")
-    for camp in CAMP_GROUPS[ac_group]:
+    for camp, prefixes in CAMP_GROUPS[ac_group].items():
         try:
-            all_df, unmatched_df, matched_df = process_camp(job_df, asset_df, camp)
+            all_df, unmatched_df, matched_df = process_camp(job_df, asset_df, camp, prefixes)
             xls = to_excel_with_format(all_df, unmatched_df, matched_df)
 
             st.download_button(
@@ -158,5 +174,11 @@ if st.button("Generate Reports"):
             )
         except Exception as e:
             st.error(f"{camp} Error: {e}")
+'''
 
+file_path = "/mnt/data/ITEFM_updated_streamlit_app.py"
+with open(file_path, "w", encoding="utf-8") as f:
+    f.write(streamlit_code)
+
+file_path
 
