@@ -3,6 +3,24 @@ import pandas as pd
 from io import BytesIO
 from openpyxl.styles import Font
 
+# --- AUTH ---
+def login():
+    st.title("🔒 ITEFM Login")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if username == "ademco" and password == "yimingiscool":
+            st.session_state.logged_in = True
+        else:
+            st.error("Invalid username or password.")
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    login()
+    st.stop()
+
 # === CONFIG ===
 SOT_KEYWORDS = [
     "CCTV", "DVMR/NVR", "Electronic Access Control System",
@@ -140,4 +158,5 @@ if st.button("Generate Reports"):
             )
         except Exception as e:
             st.error(f"{camp} Error: {e}")
+
 
