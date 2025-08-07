@@ -1,5 +1,3 @@
-# Rewriting the file after kernel reset
-streamlit_code = '''
 import streamlit as st
 import pandas as pd
 from io import BytesIO
@@ -174,11 +172,4 @@ if st.button("Generate Reports"):
             )
         except Exception as e:
             st.error(f"{camp} Error: {e}")
-'''
-
-file_path = "/mnt/data/ITEFM_updated_streamlit_app.py"
-with open(file_path, "w", encoding="utf-8") as f:
-    f.write(streamlit_code)
-
-file_path
 
