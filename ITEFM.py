@@ -2,19 +2,12 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from openpyxl.styles import Font
-from openpyxl import load_workbook
 
-# === Constants ===
+# === CONFIG ===
 SOT_KEYWORDS = [
-    "DVMR/NVR", "Electronic Access Control System", "Indoor CCTV",
-    "Intrusion Detection Systems", "VEHICULAR ARM BARRIER SYSTEM"
-]
-
-MATCH_COLUMNS = [
-    "Equipment QR Code", "Type of Service", "Location", "Status",
-    "Job Cannot Be Done", "Job Cannot be Done Reason",
-    "Job Closed Date Time Month", "Current Status",
-    "Frequency", "Scheduled Start", "Scheduled End"
+    "CCTV", "DVMR/NVR", "Electronic Access Control System",
+    "Intrusion Detection Systems", "VEHICULAR ARM BARRIER SYSTEM",
+    "Host", "Network Switch"
 ]
 
 CAMP_GROUPS = {
@@ -23,126 +16,128 @@ CAMP_GROUPS = {
     "AC3": ["MWC", "RRRC1"]
 }
 
-# === Helper Functions ===
+REPORT_COLUMNS = [
+    "Equipment QR Code", "Type of Service", "Location", "Job Status",
+    "Job Cannot Be Done", "Job Cannot be Done Reason",
+    "Job Closed Date Time Month", "Status",
+    "Frequency", "Scheduled Start", "Scheduled End"
+]
+
+# === HELPERS ===
 def load_excel(file, skiprows=None):
-    return pd.read_excel(file, header=0, skiprows=skiprows)
+    df = pd.read_excel(file, skiprows=skiprows)
+    df.columns = df.columns.astype(str).str.strip()
+    return df
 
-def process_camp(ac_df, master_df, camp_prefix):
-    ac_filtered = ac_df[ac_df["Equipment QR Code"].astype(str).str.startswith(camp_prefix)]
+def ensure_columns(df: pd.DataFrame, columns: list):
+    for col in columns:
+        if col not in df.columns:
+            df[col] = None
+    return df
 
-    # Filter by SOT type
-    master_filtered = master_df[
-        master_df["SOT Type"].astype(str).apply(lambda x: any(k in x for k in SOT_KEYWORDS))
-        | (master_df["SOT Type"] == "VEHICULAR ARM BARRIER SYSTEM")
-    ][["Equipment Tag Number", "Current Status", "SOT Type", "Physical Location"]]
+def process_camp(job_df, asset_df, camp):
+    job_camp = job_df[job_df["Equipment QR Code"].astype(str).str.startswith(f"{camp}-")].copy()
+    asset_camp = asset_df[asset_df["Equipment Tag Number"].astype(str).str.startswith(f"{camp}-")].copy()
 
-    # Merge matched
-    merged = pd.merge(ac_filtered, master_filtered,
-                      left_on="Equipment QR Code", right_on="Equipment Tag Number", how="inner")
+    if "Status" in job_camp.columns:
+        job_camp = job_camp.rename(columns={"Status": "Job Status"})
 
-    # Ensure all match columns exist
-    for col in MATCH_COLUMNS:
-        if col not in merged.columns:
-            merged[col] = None
+    merged = pd.merge(
+        job_camp,
+        asset_camp,
+        left_on="Equipment QR Code",
+        right_on="Equipment Tag Number",
+        how="inner"
+    )
 
-    matched_final = merged[MATCH_COLUMNS]
+    merged = merged[merged["SOT Type"].astype(str).apply(lambda x: any(k in x for k in SOT_KEYWORDS))]
 
-    # Unmatched from master list
-    unmatched = master_filtered[~master_filtered["Equipment Tag Number"].isin(merged["Equipment QR Code"])]
-    unmatched_final = unmatched.rename(columns={
-        "Equipment Tag Number": "Equipment QR Code",
-        "SOT Type": "Type of Service",
-        "Physical Location": "Location"
-    })[["Equipment QR Code", "Type of Service", "Location", "Current Status"]]
+    matched_df = pd.DataFrame({
+        "Equipment QR Code": merged["Equipment QR Code"],
+        "Type of Service": merged.get("Type of Service"),
+        "Location": merged.get("Location"),
+        "Job Status": merged.get("Job Status"),
+        "Job Cannot Be Done": merged.get("Job Cannot Be Done"),
+        "Job Cannot be Done Reason": merged.get("Job Cannot be Done Reason"),
+        "Job Closed Date Time Month": merged.get("Job Closed Date Time Month"),
+        "Status": merged.get("Status"),
+        "Frequency": merged.get("Frequency"),
+        "Scheduled Start": merged.get("Scheduled Start"),
+        "Scheduled End": merged.get("Scheduled End"),
+    })
+    matched_df = ensure_columns(matched_df, REPORT_COLUMNS)
 
-    for col in MATCH_COLUMNS:
-        if col not in unmatched_final.columns:
-            unmatched_final[col] = None
+    matched_qrs = matched_df["Equipment QR Code"].unique()
+    unmatched = asset_camp[~asset_camp["Equipment Tag Number"].isin(matched_qrs)]
+    unmatched = unmatched[unmatched["SOT Type"].astype(str).apply(lambda x: any(k in x for k in SOT_KEYWORDS))]
 
-    unmatched_final = unmatched_final[MATCH_COLUMNS]
+    unmatched_df = pd.DataFrame({
+        "Equipment QR Code": unmatched["Equipment Tag Number"],
+        "Type of Service": unmatched["SOT Type"],
+        "Location": unmatched.get("Physical Location"),
+        "Job Status": None,
+        "Job Cannot Be Done": None,
+        "Job Cannot be Done Reason": None,
+        "Job Closed Date Time Month": None,
+        "Status": unmatched.get("Status"),
+        "Frequency": None,
+        "Scheduled Start": None,
+        "Scheduled End": None,
+    })
+    unmatched_df = ensure_columns(unmatched_df, REPORT_COLUMNS)
 
-    all_status = pd.concat([matched_final, unmatched_final], ignore_index=True)
-    all_status["Status"] = all_status["Status"].fillna("Pending Job Creation")
+    all_status = pd.concat([matched_df, unmatched_df], ignore_index=True)
+    all_status["Job Status"] = all_status["Job Status"].fillna("Pending Job Creation")
     all_status = all_status.sort_values(by="Equipment QR Code")
 
-    return all_status, unmatched_final, matched_final
+    return all_status[REPORT_COLUMNS], unmatched_df, matched_df[REPORT_COLUMNS]
 
-def apply_red_font_and_download(all_df, unmatched_df, matched_df, camp_name):
+def to_excel_with_format(all_df, unmatched_df, matched_df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         all_df.to_excel(writer, sheet_name="All Equipment Status", index=False)
         matched_df.to_excel(writer, sheet_name="Matched Data", index=False)
         unmatched_df.to_excel(writer, sheet_name="Unmatched Tag Numbers", index=False)
 
-        # Apply red font to rows where Status is "Pending Job Creation"
         ws = writer.sheets["All Equipment Status"]
-        status_col_idx = all_df.columns.get_loc("Status") + 1
-        for row_idx, row in enumerate(all_df.itertuples(index=False), start=2):
-            if row[status_col_idx - 1] == "Pending Job Creation":
-                for col_idx in range(1, len(all_df.columns) + 1):
-                    ws.cell(row=row_idx, column=col_idx).font = Font(color="FF0000")
+        status_idx = all_df.columns.get_loc("Job Status") + 1
+        for r, row in enumerate(all_df.itertuples(index=False), start=2):
+            if row[status_idx - 1] == "Pending Job Creation":
+                for c in range(1, len(all_df.columns) + 1):
+                    ws.cell(row=r, column=c).font = Font(color="FF0000")
 
     output.seek(0)
     return output
 
-# === Streamlit App ===
-st.set_page_config(page_title="ITEFM Camp Report Generator", layout="wide")
-st.title("🏕️ ITEFM Camp Report Generator")
+# === STREAMLIT APP ===
+st.set_page_config(page_title="ITEFM Maintenance Report Generator", layout="wide")
+st.title("📋 ITEFM Maintenance Report Generator")
 
-# Sidebar: Camp group selection
-camp_group = st.sidebar.radio("Select Camp Group", list(CAMP_GROUPS.keys()))
-
-# Upload relevant AC file
-st.sidebar.markdown(f"### Upload {camp_group} Source File")
-ac_file = st.sidebar.file_uploader(f"Upload {camp_group} File", type=["xlsx"], key=f"{camp_group}_ac")
-
-# Upload master list files
-st.sidebar.markdown("### Upload Master Lists")
-camp_files = {}
-for camp in CAMP_GROUPS[camp_group]:
-    camp_files[camp] = st.sidebar.file_uploader(f"{camp} Master List", type=["xlsx"], key=camp)
-
-# Keep session state for generate flag
-if "generate_reports" not in st.session_state:
-    st.session_state["generate_reports"] = False
+ac_group = st.sidebar.radio("Select Camp Group", ["AC1", "AC2", "AC3"])
+job_file = st.sidebar.file_uploader("Upload Job Listing File (.xlsx)", type="xlsx", key=f"{ac_group}_job")
+asset_file = st.sidebar.file_uploader("Upload Grouped Asset List (.xlsx)", type="xlsx", key=f"{ac_group}_asset")
 
 if st.button("Generate Reports"):
-    st.session_state["generate_reports"] = True
-
-if st.session_state["generate_reports"]:
-    if not ac_file:
-        st.error(f"Please upload the {camp_group} source file.")
+    if not job_file or not asset_file:
+        st.warning("Please upload both job and asset files.")
         st.stop()
 
-    try:
-        ac_df = load_excel(ac_file, skiprows=8)
-        ac_df.columns = ac_df.columns.str.strip()
-    except Exception as e:
-        st.error(f"Failed to read AC file: {e}")
-        st.stop()
+    job_df = load_excel(job_file, skiprows=8)
+    asset_df = load_excel(asset_file, skiprows=5)
 
-    for camp in CAMP_GROUPS[camp_group]:
-        file = camp_files[camp]
-        if not file:
-            st.warning(f"{camp} Master List not uploaded.")
-            continue
-
+    st.subheader("Download Reports:")
+    for camp in CAMP_GROUPS[ac_group]:
         try:
-            master_df = load_excel(file, skiprows=5)
-            master_df.columns = master_df.columns.str.strip()
-        except Exception as e:
-            st.error(f"Error reading {camp} master list: {e}")
-            continue
-
-        try:
-            combined_df, unmatched_df, matched_df = process_camp(ac_df, master_df, camp_prefix=f"{camp}-")
-            excel_data = apply_red_font_and_download(combined_df, unmatched_df, matched_df, camp)
+            all_df, unmatched_df, matched_df = process_camp(job_df, asset_df, camp)
+            xls = to_excel_with_format(all_df, unmatched_df, matched_df)
 
             st.download_button(
-                label=f"⬇️ Download Report for {camp}",
-                data=excel_data,
+                label=f"⬇️ Download {camp} Report",
+                data=xls,
                 file_name=f"{camp}_report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"{camp}_dl"
             )
         except Exception as e:
-            st.error(f"Failed processing for {camp}: {e}")
+            st.error(f"{camp} Error: {e}")
+
